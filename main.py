@@ -6,7 +6,7 @@ from scipy import *
 import gtk, gtk.glade
 
 
-# CONSTANTS ----------------------------------------------------------------------------------
+# FLAGS AND DEFAULTS --------------------------------------------------------------------------
 
 DEBUG_ENABLE = False
 
@@ -27,8 +27,9 @@ FILTER = 'TaperJunction'
 SHOW_RAW = True
 SHOW_ERROR = True
 
+# FUNCTION DECLARATIONS ------------------------------------------------------------------------
 
-# debug function, show a window containing drawn out circle
+# debug function, show a window containing drawn out circle - deprecated with addition of GUI
 def debug_showFoundCircle(img, circle_output):
     circle_cleanedup = np.uint16(np.around(circle_output))
     cimg = cv.cvtColor(img, cv.COLOR_GRAY2BGR)
@@ -67,11 +68,11 @@ def getCVImageList(path, filenames):
 def getCVCircles(images):
     circles = []
     for image in images:
-        # create grayscale image for Hough
+        # create grayscale image for Hough transform and append list of found circles
         image_bw = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
         circles.append(cv.HoughCircles(image_bw, cv.HOUGH_GRADIENT, 1, 20, param1 = HOUGH_PARAM_1, param2 = HOUGH_PARAM_2, minRadius = HOUGH_MINRAD, maxRadius = HOUGH_MAXRAD))
-        if DEBUG_ENABLE:
-            debug_showFoundCircle(image, circles[-1])
+#        if DEBUG_ENABLE:
+#            debug_showFoundCircle(image, circles[-1])
 
     return circles
 
@@ -87,14 +88,15 @@ def extractFileNameToken(filenames):
         flow_tokens.append(no_exp_info.split('-')[-2])
     return flow_tokens
 
-# extract droplet flowrate
+# extractDropletFlowrate - returns carrier phase flow rate from a string of format cc,dd
 def extractDropletFlowrate(flowpair):
     return float(flowpair.split(',')[1])
 
-# extract carrier flowrate
+# extractCarrierFlowrate - returns carrier phase flow rate from a string of format cc,dd
 def extractCarrierFlowrate(flowpair):
     return float(flowpair.split(',')[0])
 
+# performPixelVolumeConversion - takes a distance in pixels and returns the volume of a droplet in either cubic meters or microliters, depending on channel height
 def performPixelVolumeConversion(distance_in_pixels):
     # convert to microns
     distance_in_microns = distance_in_pixels * (REFERENCE_DISTANCE_MICRON / REFERENCE_DISTANCE_PIXEL)
@@ -102,11 +104,11 @@ def performPixelVolumeConversion(distance_in_pixels):
     # scale to meters
     xy_vals = distance_in_microns * 1e-6
 
-    # account for droplet being squished in the channel
-    #if(distance_in_microns > CHANNEL_HEIGHT):
-    #    z_val = CHANNEL_HEIGHT * 10e-6
-    #else:
-    z_val = xy_vals
+    # account for droplet being pancaked in the channel, approximate as an ovular shape
+    if(distance_in_microns > CHANNEL_HEIGHT):
+        z_val = CHANNEL_HEIGHT * 10e-6
+    else:
+        z_val = xy_vals
 
     # volume calculation
     volume = (4./3.) * np.pi * xy_vals * xy_vals * z_val
@@ -114,10 +116,12 @@ def performPixelVolumeConversion(distance_in_pixels):
         volume = volume * 1e9
     return volume
 
-
+# GUI declaration: Done here for forward declaration
 MainGUI = gtk.glade.XML('Application.glade')
 
-# UpdateValsFromGUI is called before every preview and run, updates all constants with their values in the GUI
+# GUI HANDLER DECLARATIONS ------------------------------------------------------------------------------------
+
+# UpdateValsFromGUI is called before every preview and run, updates all flags with their values in the GUI
 def UpdateValsFromGUI():
     global DEBUG_ENABLE
     global HOUGH_PARAM_1
@@ -144,6 +148,7 @@ def UpdateValsFromGUI():
     HOUGH_MINRAD = (int)(MainGUI.get_widget('val_MinRad').get_value())
     HOUGH_MAXRAD = (int)(MainGUI.get_widget('val_MaxRad').get_value())
     
+    # Switching for radio buttons
     if MainGUI.get_widget('val_UnitPixels').get_active():
         CONVERT_UNITS = False
     else:
@@ -152,6 +157,7 @@ def UpdateValsFromGUI():
             CONVERT_TO_MICROLITRES = True
         else:
             CONVERT_TO_MICROLITRES = False
+
     REFERENCE_DISTANCE_MICRON = (float)(MainGUI.get_widget('val_RefMicron').get_text())
     REFERENCE_DISTANCE_PIXEL = (float)(MainGUI.get_widget('val_RefPx').get_text())
     CHANNEL_HEIGHT = (float)(MainGUI.get_widget('val_ChannelHeight').get_text())
@@ -162,7 +168,6 @@ def UpdateValsFromGUI():
     SHOW_RAW = MainGUI.get_widget('val_ShowRawData').get_active()
     SHOW_ERROR = MainGUI.get_widget('val_ShowMeanError').get_active()
     
-    return
 
 
 # RunProg
@@ -188,17 +193,18 @@ def RunProg(widget):
     for flowrate in flowrates:
         flowHashTable[flowrate] = []
     
-    # populate hashtable with detected circle radii
+    # populate hashtable with detected circle radii - only use one of the circles for each data point
     for index in range(0, len(circles_raw)):
         tmp_circ = circles_raw[index][0][0]
         flowHashTable[flowrate_hashes[index]].append(tmp_circ[2])
     
-    # convert to array data type for data processing
+    # convert to array data type for data processing and perform unit conversions
     for flowrate in flowrates:
-        flowHashTable[flowrate] = array(flowHashTable[flowrate])
-        # do unit conversion if requested
+        # do unit conversion if requested - new in GUI version, not parallelized due to branching control
         if CONVERT_UNITS:
-            flowHashTable[flowrate] = performPixelVolumeConversion(flowHashTable[flowrate])
+            for index in range(0,len(flowHashTable[flowrate])):
+                flowHashTable[flowrate][index] = performPixelVolumeConversion(flowHashTable[flowrate][index])
+        flowHashTable[flowrate] = np.array(flowHashTable[flowrate])
     
     # create new hashtable with mean and standard deviation data
     meanHashTable = {}
@@ -208,8 +214,11 @@ def RunProg(widget):
         stdDevHashTable[flowrate] = np.std(flowHashTable[flowrate])
     
     if DEBUG_ENABLE:
+        print 'Flow rates: hash table'
         print flowHashTable
+        print 'Means: hash table'
         print meanHashTable
+        print 'Standard deviation: hash table'
         print stdDevHashTable
     
     # convert hashtable data into usable graphable x,y pairs
@@ -221,37 +230,31 @@ def RunProg(widget):
     for flowrate in flowrates:
         # get the droplet phase flow rate
         x_val = extractDropletFlowrate(flowrate)
+        # extend with identical x values for appropriate number of data points
         scatter_x.extend([x_val] * len(flowHashTable[flowrate]))
+        # extend y data with y values
         scatter_y.extend(flowHashTable[flowrate])
         average_x.append(x_val)
         average_y.append(meanHashTable[flowrate])
         errbar_y.append(stdDevHashTable[flowrate])
     
     if DEBUG_ENABLE:
+        print 'Scatter plot: x values'
         print scatter_x
+        print 'Scatter plot: y values'
         print scatter_y
-    
-    # convert everything to arrays
-    #scatter_x = array(scatter_x)
-    #scatter_y = array(scatter_y)
-    #average_x = array(average_x)
-    #average_y = array(average_y)
-    #errbar_y = array(errbar_y)
-    
-    # perform pixel to volume conversion?
-    #if CONVERT_UNITS:
-    #    scatter_y = performPixelVolumeConversion(scatter_y)
-    #    average_y = performPixelVolumeConversion(average_y)
-    #    errbar_y = performPixelVolumeConversion(errbar_y)
     
     title_text = ''
     plot = pylab.figure()
     subplot = plot.add_subplot(111)
+    # Plot based on selected items to plot
     if SHOW_RAW:
         subplot.plot(scatter_x, scatter_y, 'xb')
     if SHOW_ERROR:
         subplot.errorbar(average_x, average_y, fmt='-r', yerr=errbar_y, marker='s', capsize=2, ecolor='black')
     subplot.set_xlabel(r'Droplet Phase Flow Rate ($\mu$L/min)')
+
+    # Set y axis label based on the set flags
     if CONVERT_UNITS:
         title_text = 'Volume'
         if CONVERT_TO_MICROLITRES:
@@ -262,14 +265,15 @@ def RunProg(widget):
         title_text = 'Radius'
         subplot.set_ylabel('Droplet Radius (px)')
     
-
     # extract carrier flowrate (assumed constant) to make title
     title_assembled = 'Droplet ' + title_text + ' as a Function of Droplet Phase Flow Rate at ' + str(extractCarrierFlowrate(flowrates[0])) + ' $\mu$L/min'
     subplot.set_title(title_assembled)
+    # show graph
     plot.set_tight_layout(True)
     pylab.show()
-    return
 
+
+# RunPreview - Called when preview button is pressed. Gets input images and creates a preview image from one of these after finding circles with the selected parameters
 def RunPreview(widget):
     # Fetch new values from the GUI widgets
     UpdateValsFromGUI()
@@ -278,24 +282,49 @@ def RunPreview(widget):
     img = getFileList(DIRECTORY, '.bmp')
     fimg = getFilteredFiles(FILTER, img)
 
-    # Open all files as CV images, and find circles in each image
     img_handles = getCVImageList(DIRECTORY, fimg)
-    #width, height, channels = img_handles[0].shape
-    pixbuf = gtk.gdk.pixbuf_new_from_data(img_handles[0].tostring(), gtk.gdk.COLORSPACE_RGB, False, 8, 1280, 1024, 1280 * 3)
+    image_bw = cv.cvtColor(img_handles[0], cv.COLOR_BGR2GRAY)
+
+    # find circle in one image
+    circles = cv.HoughCircles(image_bw, cv.HOUGH_GRADIENT, 1, 20, param1 = HOUGH_PARAM_1, param2 = HOUGH_PARAM_2, minRadius = HOUGH_MINRAD, maxRadius = HOUGH_MAXRAD)
+    
+    # draw circles on preview image
+    img_circles = img_handles[0]
+    circles_cleanedup = np.uint16(np.around(circles))
+    for i in circles_cleanedup[0,:]:
+        cv.circle(img_circles,(i[0],i[1]),i[2],(255,0,0),2)
+    
+    # create pixel buffer from preview image, scale to an appropriate size with bilinear interpolation
+    pixbuf = gtk.gdk.pixbuf_new_from_data(img_circles.tostring(), gtk.gdk.COLORSPACE_RGB, False, 8, 1280, 1024, 1280 * 3)
     pixbuf = pixbuf.scale_simple(800,600,gtk.gdk.INTERP_BILINEAR)
     
+    # update the preview image in the main window from pixel buffer
     img_gtk = MainGUI.get_widget('img_Preview')
     img_gtk.set_from_pixbuf(pixbuf)
     img_gtk.show()
 
-    return
+# ShowAboutDialog - Shows the program info
+def ShowAboutDialog(widget):
+    MainGUI.get_widget('aboutdialog1').show()
 
+def HideAboutDialog(widget, data):
+    MainGUI.get_widget('aboutdialog1').hide()
+
+# RunExit - 
 def RunExit(widget):
     print 'exit'
     gtk.main_quit()
-    return
 
-dic = {'on_run_clicked':RunProg, 'on_preview_clicked':RunPreview, 'on_exit_clicked':RunExit}
+# MAIN PROGRAM BODY -------------------------------------------------------------------------------------------------
+
+# bind signals and handlers and show GUI
+dic = {'on_run_clicked':RunProg, 
+        'on_preview_clicked':RunPreview, 
+        'on_exit_clicked':RunExit,
+        'on_window1_destroy':RunExit,
+        'on_file_Exit_activate':RunExit,
+        'on_help_About_activate':ShowAboutDialog,
+        'on_aboutdialog1_response':HideAboutDialog}
 MainGUI.signal_autoconnect(dic)
 MainGUI.get_widget('window1').show()
 gtk.main()
