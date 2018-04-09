@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 import os
 import cv2 as cv
 import numpy as np
@@ -285,7 +286,7 @@ def RunPreview(widget):
     img_handles = getCVImageList(DIRECTORY, fimg)
     image_bw = cv.cvtColor(img_handles[0], cv.COLOR_BGR2GRAY)
 
-    # find circle in one image
+    # find circle in one (first) image
     circles = cv.HoughCircles(image_bw, cv.HOUGH_GRADIENT, 1, 20, param1 = HOUGH_PARAM_1, param2 = HOUGH_PARAM_2, minRadius = HOUGH_MINRAD, maxRadius = HOUGH_MAXRAD)
     
     # draw circles on preview image
@@ -296,6 +297,7 @@ def RunPreview(widget):
     
     # create pixel buffer from preview image, scale to an appropriate size with bilinear interpolation
     pixbuf = gtk.gdk.pixbuf_new_from_data(img_circles.tostring(), gtk.gdk.COLORSPACE_RGB, False, 8, 1280, 1024, 1280 * 3)
+    # hard coded resolutions (for now)
     pixbuf = pixbuf.scale_simple(800,600,gtk.gdk.INTERP_BILINEAR)
     
     # update the preview image in the main window from pixel buffer
